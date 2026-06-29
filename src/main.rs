@@ -50,15 +50,30 @@ struct SeparatorConfig {
 fn load_separators() -> Vec<SeparatorConfig> {
     if let Ok(data) = std::fs::read_to_string("separators.json") {
         if let Ok(p) = serde_json::from_str::<Vec<SeparatorConfig>>(&data) {
-            if !p.is_empty() { return p; }
+            if !p.is_empty() {
+                return p;
+            }
         }
     }
     vec![SeparatorConfig {
-        name: "Demucs".into(), command: vec!["python".into(),"-m".into(),"demucs".into()],
-        models: vec!["htdemucs".into(),"htdemucs_ft".into(),"mdx_extra".into(),"htdemucs_6s".into()],
-        modes: vec!["vocals".into(),"four_stems".into(),"six_stems".into()],
-        args_before: vec!["-n".into(),"{model}".into(),"-o".into(),"{output}".into()],
-        two_stem_flag: "--two-stems=vocals".into(), device_flag: "-d".into(), stems_mode: "flag".into(),
+        name: "Demucs".into(),
+        command: vec!["python".into(), "-m".into(), "demucs".into()],
+        models: vec![
+            "htdemucs".into(),
+            "htdemucs_ft".into(),
+            "mdx_extra".into(),
+            "htdemucs_6s".into(),
+        ],
+        modes: vec!["vocals".into(), "four_stems".into(), "six_stems".into()],
+        args_before: vec![
+            "-n".into(),
+            "{model}".into(),
+            "-o".into(),
+            "{output}".into(),
+        ],
+        two_stem_flag: "--two-stems=vocals".into(),
+        device_flag: "-d".into(),
+        stems_mode: "flag".into(),
     }]
 }
 
@@ -271,7 +286,11 @@ impl StemStudio {
             // portable Python bundled with the app
             let portable = cwd.join("runtime").join("python").join("python.exe");
             if portable.exists() {
-                return vec![portable.to_string_lossy().to_string(), "-m".into(), "demucs".into()];
+                return vec![
+                    portable.to_string_lossy().to_string(),
+                    "-m".into(),
+                    "demucs".into(),
+                ];
             }
         }
         if Self::find_tool("demucs.exe").is_some() {
@@ -821,7 +840,10 @@ impl StemStudio {
             let cmd = if let Some(ref cfg) = cfg {
                 let mut c = cfg.command.clone();
                 for arg in &cfg.args_before {
-                    c.push(arg.replace("{model}", &model).replace("{output}", &output_dir.to_string_lossy().to_string()));
+                    c.push(
+                        arg.replace("{model}", &model)
+                            .replace("{output}", &output_dir.to_string_lossy().to_string()),
+                    );
                 }
                 if cfg.stems_mode == "flag" && mode == "vocals" && !cfg.two_stem_flag.is_empty() {
                     c.push(cfg.two_stem_flag.clone());
@@ -835,10 +857,23 @@ impl StemStudio {
             } else {
                 // fallback Demucs
                 let mut c = demucs_base.clone();
-                let m = if mode == "six_stems" && model != "htdemucs_6s" { "htdemucs_6s".to_string() } else { model.clone() };
-                c.extend_from_slice(&["-n".into(), m, "-o".into(), output_dir.to_string_lossy().to_string()]);
-                if mode == "vocals" { c.push("--two-stems=vocals".into()); }
-                if device != "auto" { c.extend_from_slice(&["-d".into(), device.clone()]); }
+                let m = if mode == "six_stems" && model != "htdemucs_6s" {
+                    "htdemucs_6s".to_string()
+                } else {
+                    model.clone()
+                };
+                c.extend_from_slice(&[
+                    "-n".into(),
+                    m,
+                    "-o".into(),
+                    output_dir.to_string_lossy().to_string(),
+                ]);
+                if mode == "vocals" {
+                    c.push("--two-stems=vocals".into());
+                }
+                if device != "auto" {
+                    c.extend_from_slice(&["-d".into(), device.clone()]);
+                }
                 c.push(audio.to_string_lossy().to_string());
                 c
             };
@@ -1178,14 +1213,19 @@ impl eframe::App for StemStudio {
                 egui::ComboBox::from_id_salt("separator")
                     .selected_text(&self.separator)
                     .show_ui(ui, |ui| {
-                        let names: Vec<String> = self.separators.iter().map(|s| s.name.clone()).collect();
+                        let names: Vec<String> =
+                            self.separators.iter().map(|s| s.name.clone()).collect();
                         for t in &names {
                             if ui.selectable_label(self.separator == *t, t).clicked() {
                                 self.separator = t.clone();
                                 // reset mode/model to first of new separator
                                 if let Some(cfg) = find_separator(&self.separators, t) {
-                                    if let Some(m) = cfg.modes.first() { self.mode = m.clone(); }
-                                    if let Some(m) = cfg.models.first() { self.model = m.clone(); }
+                                    if let Some(m) = cfg.modes.first() {
+                                        self.mode = m.clone();
+                                    }
+                                    if let Some(m) = cfg.models.first() {
+                                        self.model = m.clone();
+                                    }
                                 }
                             }
                         }
@@ -1195,7 +1235,8 @@ impl eframe::App for StemStudio {
                     .selected_text(&self.mode)
                     .show_ui(ui, |ui| {
                         let modes: Vec<String> = find_separator(&self.separators, &self.separator)
-                            .map(|c| c.modes.clone()).unwrap_or_default();
+                            .map(|c| c.modes.clone())
+                            .unwrap_or_default();
                         for m in &modes {
                             if ui.selectable_label(self.mode == *m, m).clicked() {
                                 self.mode = m.clone();
@@ -1207,7 +1248,8 @@ impl eframe::App for StemStudio {
                     .selected_text(&self.model)
                     .show_ui(ui, |ui| {
                         let models: Vec<String> = find_separator(&self.separators, &self.separator)
-                            .map(|c| c.models.clone()).unwrap_or_default();
+                            .map(|c| c.models.clone())
+                            .unwrap_or_default();
                         for m in &models {
                             if ui.selectable_label(self.model == *m, m).clicked() {
                                 self.model = m.clone();
@@ -1554,16 +1596,24 @@ fn main() {
                 let cy = y as f32 - size as f32 / 2.0;
                 let r = size as f32 / 2.0 - 2.0;
                 let d = (cx * cx + cy * cy).sqrt();
-                let alpha = if d < r - 3.0 { 255 }
-                    else if d < r { ((r - d) / 3.0 * 255.0) as u8 }
-                    else { 0 };
+                let alpha = if d < r - 3.0 {
+                    255
+                } else if d < r {
+                    ((r - d) / 3.0 * 255.0) as u8
+                } else {
+                    0
+                };
                 rgba[i] = accent.r();
                 rgba[i + 1] = accent.g();
                 rgba[i + 2] = accent.b();
                 rgba[i + 3] = alpha;
             }
         }
-        egui::IconData { rgba, width: size, height: size }
+        egui::IconData {
+            rgba,
+            width: size,
+            height: size,
+        }
     };
 
     let options = eframe::NativeOptions {

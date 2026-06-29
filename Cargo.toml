@@ -3,6 +3,10 @@ name = "yyw"
 version = "0.1.0"
 edition = "2021"
 
+[[bin]]
+name = "yyw-cli"
+path = "src/bin/cli.rs"
+
 [dependencies]
 eframe = "0.31"
 egui = "0.31"

@@ -59,7 +59,7 @@ target\release\yyw.exe
 CLI 程序位于：
 
 ```text
-target\release\cli.exe
+target\release\yyw-cli.exe
 ```
 
 ## GUI 使用流程
@@ -81,29 +81,29 @@ target\release\cli.exe
 
 ## CLI 使用
 
-当前目录中如果已有 `stem-cli.exe`，可以直接使用：
+当前目录中如果已有 `yyw-cli.exe`，可以直接使用：
 
 ```powershell
-.\stem-cli.exe --help
+.\yyw-cli.exe --help
 ```
 
-从源码构建后，CLI 默认输出为 `target\release\cli.exe`：
+从源码构建后，CLI 输出为 `target\release\yyw-cli.exe`：
 
 ```powershell
-.\target\release\cli.exe --help
+.\target\release\yyw-cli.exe --help
 ```
 
 示例：
 
 ```powershell
 # 分离单个音频
-.\stem-cli.exe -i ".\song.mp3" -o ".\stems_output" -M vocals
+.\yyw-cli.exe -i ".\song.mp3" -o ".\stems_output" -M vocals
 
 # 只转换 NCM，不做分离
-.\stem-cli.exe -i ".\song.ncm" --convert-only
+.\yyw-cli.exe -i ".\song.ncm" --convert-only
 
 # 批量扫描目录并使用六轨模型
-.\stem-cli.exe -i "G:\CloudMusic\VipSongsDownload" -o ".\stems_output" -M six_stems -m htdemucs_6s
+.\yyw-cli.exe -i "G:\CloudMusic\VipSongsDownload" -o ".\stems_output" -M six_stems -m htdemucs_6s
 ```
 
 主要参数：

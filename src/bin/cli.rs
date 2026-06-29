@@ -6,12 +6,13 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 
 use yyw::{
-    find_demucs, find_tool, load_separators, run_separation, scan_inputs, AudioItem, Settings, TaskMessage,
+    find_demucs, find_tool, load_separators, run_separation, scan_inputs, AudioItem, Settings,
+    TaskMessage,
 };
 
 #[derive(Parser)]
-    #[command(name = "yyw-cli", about = "NCM conversion & stem separation CLI")]
-    struct Args {
+#[command(name = "yyw-cli", about = "NCM conversion & stem separation CLI")]
+struct Args {
     /// Input file or directory
     #[arg(short, long, default_value = r"G:\CloudMusic\VipSongsDownload")]
     input: String,
@@ -51,9 +52,11 @@ fn main() {
     let demucs_cmd = find_demucs();
     let separators = load_separators();
 
-    eprintln!("stem-cli - NCM conversion & stem separation");
-    eprintln!("  Tool: {}  Model: {}  Mode: {}  Device: {}",
-        args.tool, args.model, args.mode, args.device);
+    eprintln!("yyw-cli - NCM conversion & stem separation");
+    eprintln!(
+        "  Tool: {}  Model: {}  Mode: {}  Device: {}",
+        args.tool, args.model, args.mode, args.device
+    );
 
     // scan input
     let input_path = PathBuf::from(&args.input);
@@ -80,8 +83,16 @@ fn main() {
         items.push(AudioItem {
             path: input_path.clone(),
             status: "待处理".into(),
-            process_path: if is_ncm { None } else { Some(input_path.clone()) },
-            kind: if is_ncm { yyw::AudioKind::Ncm } else { yyw::AudioKind::Normal },
+            process_path: if is_ncm {
+                None
+            } else {
+                Some(input_path.clone())
+            },
+            kind: if is_ncm {
+                yyw::AudioKind::Ncm
+            } else {
+                yyw::AudioKind::Normal
+            },
         });
     } else {
         eprintln!("Error: input path does not exist: {}", args.input);
@@ -99,7 +110,11 @@ fn main() {
             if matches!(item.kind, yyw::AudioKind::Ncm) {
                 if let Some(ref np) = ncmdump_path {
                     eprintln!("Converting: {}", item.path.display());
-                    match yyw::convert_ncm_sync(np, &item.path, item.path.parent().unwrap_or(std::path::Path::new("."))) {
+                    match yyw::convert_ncm_sync(
+                        np,
+                        &item.path,
+                        item.path.parent().unwrap_or(std::path::Path::new(".")),
+                    ) {
                         Ok(c) => eprintln!("  -> {}", c.display()),
                         Err(e) => eprintln!("  FAIL: {e}"),
                     }
@@ -133,11 +148,18 @@ fn main() {
 
     thread::spawn(move || {
         run_separation(
-            ncmdump_avail, &np_clone,
-            &items_clone, &output_dir_clone,
-            &separators_clone, &tool,
-            &model, &mode, &device,
-            &demucs_cmd_clone, tx, running_clone,
+            ncmdump_avail,
+            &np_clone,
+            &items_clone,
+            &output_dir_clone,
+            &separators_clone,
+            &tool,
+            &model,
+            &mode,
+            &device,
+            &demucs_cmd_clone,
+            tx,
+            running_clone,
         );
     });
 
