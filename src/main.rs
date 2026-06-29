@@ -1540,8 +1540,35 @@ impl StemStudio {
 
 fn main() {
     env_logger::init();
+
+    // generate a simple teal icon (32x32)
+    let icon = {
+        let size = 32u32;
+        let mut rgba = vec![0u8; (size * size * 4) as usize];
+        let accent = egui::Color32::from_rgb(45, 212, 191);
+        for y in 0..size {
+            for x in 0..size {
+                let i = ((y * size + x) * 4) as usize;
+                // rounded rect shape
+                let cx = x as f32 - size as f32 / 2.0;
+                let cy = y as f32 - size as f32 / 2.0;
+                let r = size as f32 / 2.0 - 2.0;
+                let d = (cx * cx + cy * cy).sqrt();
+                let alpha = if d < r - 3.0 { 255 }
+                    else if d < r { ((r - d) / 3.0 * 255.0) as u8 }
+                    else { 0 };
+                rgba[i] = accent.r();
+                rgba[i + 1] = accent.g();
+                rgba[i + 2] = accent.b();
+                rgba[i + 3] = alpha;
+            }
+        }
+        egui::IconData { rgba, width: size, height: size }
+    };
+
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
+            .with_icon(icon)
             .with_inner_size([1180.0, 760.0])
             .with_min_inner_size([980.0, 640.0]),
         ..Default::default()
