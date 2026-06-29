@@ -2,10 +2,13 @@
 
 use eframe::egui;
 use egui_extras::{Column, TableBuilder};
-use rodio::{Decoder, OutputStream, OutputStreamHandle, Sink};
+use rodio::{Decoder, OutputStream, OutputStreamHandle, Sink, Source};
 use serde::{Deserialize, Serialize};
+use std::collections::hash_map::DefaultHasher;
 use std::collections::HashSet;
-use std::io::Read;
+use std::fs::File;
+use std::hash::{Hash, Hasher};
+use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -137,6 +140,14 @@ struct StemItem {
     stem_name: String,
 }
 
+#[derive(Clone)]
+struct MediaInfo {
+    title: String,
+    path: PathBuf,
+    rows: Vec<(String, String)>,
+    raw: String,
+}
+
 enum TaskMessage {
     #[allow(dead_code)]
     Log(String),
@@ -176,6 +187,14 @@ struct StemStudio {
     sink: Option<Sink>,
     now_playing: String,
     paused: bool,
+    current_path: Option<PathBuf>,
+    playback_duration: Option<Duration>,
+    playback_offset: Duration,
+    cover_texture: Option<egui::TextureHandle>,
+    cover_status: String,
+    lyrics_text: String,
+    lyrics_status: String,
+    media_info: Option<MediaInfo>,
 }
 
 fn status_color(status: &str) -> egui::Color32 {
@@ -195,6 +214,72 @@ fn status_color(status: &str) -> egui::Color32 {
     }
 }
 
+fn load_png_icon(bytes: &[u8]) -> Option<egui::IconData> {
+    let image = image::load_from_memory(bytes).ok()?;
+    let rgba = image
+        .resize(64, 64, image::imageops::FilterType::Lanczos3)
+        .into_rgba8();
+    Some(egui::IconData {
+        width: rgba.width(),
+        height: rgba.height(),
+        rgba: rgba.into_raw(),
+    })
+}
+
+fn load_color_image(path: &Path) -> Option<egui::ColorImage> {
+    let image = image::ImageReader::open(path)
+        .ok()?
+        .decode()
+        .ok()?
+        .to_rgba8();
+    let size = [image.width() as usize, image.height() as usize];
+    Some(egui::ColorImage::from_rgba_unmultiplied(
+        size,
+        image.as_raw(),
+    ))
+}
+
+fn format_time(duration: Duration) -> String {
+    let secs = duration.as_secs();
+    format!("{:02}:{:02}", secs / 60, secs % 60)
+}
+
+fn valid_image_ext(path: &Path) -> bool {
+    path.extension()
+        .map(|ext| {
+            matches!(
+                ext.to_string_lossy().to_lowercase().as_str(),
+                "png" | "jpg" | "jpeg"
+            )
+        })
+        .unwrap_or(false)
+}
+
+fn compact_text(text: &str, max_chars: usize) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    if chars.len() <= max_chars {
+        return text.to_string();
+    }
+    if max_chars <= 3 {
+        return "...".to_string();
+    }
+    let head = (max_chars - 3) / 2;
+    let tail = max_chars - 3 - head;
+    let start: String = chars.iter().take(head).collect();
+    let end: String = chars.iter().skip(chars.len() - tail).collect();
+    format!("{start}...{end}")
+}
+
+fn compact_path(path: &Path, max_chars: usize) -> String {
+    compact_text(&path.to_string_lossy(), max_chars)
+}
+
+fn compact_parent_path(path: &Path, max_chars: usize) -> String {
+    path.parent()
+        .map(|parent| compact_path(parent, max_chars))
+        .unwrap_or_else(|| compact_path(path, max_chars))
+}
+
 impl StemStudio {
     fn new() -> Self {
         let settings = Self::load_settings();
@@ -208,7 +293,7 @@ impl StemStudio {
         let (stream, stream_handle) = OutputStream::try_default()
             .unwrap_or_else(|_| OutputStream::try_default().expect("no audio output device"));
 
-        Self {
+        let mut app = Self {
             source_dir: settings.source,
             output_dir: settings.output,
             model: settings.model,
@@ -233,7 +318,17 @@ impl StemStudio {
             sink: None,
             now_playing: "未播放".to_string(),
             paused: false,
-        }
+            current_path: None,
+            playback_duration: None,
+            playback_offset: Duration::ZERO,
+            cover_texture: None,
+            cover_status: "未加载封面".to_string(),
+            lyrics_text: "未加载歌词".to_string(),
+            lyrics_status: "未加载歌词".to_string(),
+            media_info: None,
+        };
+        app.scan_stems();
+        app
     }
 
     fn load_settings() -> Settings {
@@ -260,21 +355,7 @@ impl StemStudio {
     }
 
     fn find_tool(name: &str) -> Option<PathBuf> {
-        if let Ok(cwd) = std::env::current_dir() {
-            let local = cwd.join("tools").join(name);
-            if local.exists() {
-                return Some(local);
-            }
-        }
-        if let Ok(paths) = std::env::var("PATH") {
-            for dir in std::env::split_paths(&paths) {
-                let c = dir.join(name);
-                if c.exists() {
-                    return Some(c);
-                }
-            }
-        }
-        None
+        yyw::find_tool(name)
     }
 
     fn find_demucs() -> Vec<String> {
@@ -293,8 +374,8 @@ impl StemStudio {
                 ];
             }
         }
-        if Self::find_tool("demucs.exe").is_some() {
-            return vec!["demucs".to_string()];
+        if let Some(demucs) = Self::find_tool("demucs.exe") {
+            return vec![demucs.to_string_lossy().to_string()];
         }
         let conda_python = PathBuf::from(r"D:\conda\python.exe");
         if conda_python.exists() {
@@ -444,6 +525,7 @@ impl StemStudio {
         self.stems.clear();
         let output = Path::new(&self.output_dir);
         if !output.exists() {
+            self.selected_stem = None;
             return;
         }
         let mut found: Vec<StemItem> = Vec::new();
@@ -476,6 +558,13 @@ impl StemStudio {
                 .then_with(|| a.stem_name.to_lowercase().cmp(&b.stem_name.to_lowercase()))
         });
         self.stems = found;
+        if self
+            .selected_stem
+            .map(|i| i >= self.stems.len())
+            .unwrap_or(false)
+        {
+            self.selected_stem = None;
+        }
     }
 
     fn command_line(cmd: &[String]) -> String {
@@ -1016,27 +1105,722 @@ impl StemStudio {
 
     // ── player ──
 
-    fn play_audio(&mut self, path: &Path) {
+    fn related_source_for(&self, path: &Path) -> PathBuf {
+        if let Some(found) = self
+            .items
+            .iter()
+            .filter_map(|item| item.process_path.as_ref())
+            .find(|p| *p == path)
+        {
+            return found.clone();
+        }
+
+        let track_name = path
+            .parent()
+            .and_then(|p| p.file_name())
+            .map(|n| n.to_string_lossy().to_string());
+        if let Some(track_name) = track_name {
+            if let Some(found) = self
+                .items
+                .iter()
+                .filter_map(|item| item.process_path.as_ref())
+                .find(|p| {
+                    p.file_stem()
+                        .map(|s| s.to_string_lossy() == track_name)
+                        .unwrap_or(false)
+                })
+            {
+                return found.clone();
+            }
+
+            let source_root = Path::new(&self.source_dir);
+            if source_root.exists() {
+                let mut candidates = Vec::new();
+                for entry in WalkDir::new(source_root).into_iter().filter_map(|e| e.ok()) {
+                    if !entry.file_type().is_file() {
+                        continue;
+                    }
+                    let Some(ext) = entry.path().extension() else {
+                        continue;
+                    };
+                    if !INPUT_EXTS.contains(&ext.to_string_lossy().to_lowercase().as_str()) {
+                        continue;
+                    }
+                    if entry
+                        .path()
+                        .file_stem()
+                        .map(|s| s.to_string_lossy() == track_name)
+                        .unwrap_or(false)
+                    {
+                        candidates.push(entry.path().to_path_buf());
+                    }
+                }
+                candidates.sort_by_key(|candidate| {
+                    let ext = candidate
+                        .extension()
+                        .map(|ext| ext.to_string_lossy().to_lowercase())
+                        .unwrap_or_default();
+                    if CONVERTED_EXTS.contains(&ext.as_str()) {
+                        0
+                    } else if ext == "ncm" {
+                        2
+                    } else {
+                        1
+                    }
+                });
+                if let Some(candidate) = candidates.into_iter().next() {
+                    return candidate;
+                }
+            }
+        }
+
+        path.to_path_buf()
+    }
+
+    fn media_candidates_for(&self, path: &Path) -> Vec<PathBuf> {
+        let mut candidates = vec![path.to_path_buf()];
+        let source = self.related_source_for(path);
+        if source != path {
+            candidates.push(source);
+        }
+        let flac_sibling = path.with_extension("flac");
+        if flac_sibling.exists() && flac_sibling != path {
+            candidates.push(flac_sibling);
+        }
+        candidates.dedup();
+        candidates
+    }
+
+    fn find_lyrics_file(&self, path: &Path) -> Option<PathBuf> {
+        for base in self.media_candidates_for(path) {
+            for ext in ["lrc", "txt"] {
+                let candidate = base.with_extension(ext);
+                if candidate.exists() {
+                    return Some(candidate);
+                }
+            }
+            if let Some(parent) = base.parent() {
+                for name in ["lyrics.lrc", "lyrics.txt"] {
+                    let candidate = parent.join(name);
+                    if candidate.exists() {
+                        return Some(candidate);
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    fn find_cover_file(&self, path: &Path) -> Option<PathBuf> {
+        for base in self.media_candidates_for(path) {
+            for ext in ["png", "jpg", "jpeg"] {
+                let candidate = base.with_extension(ext);
+                if candidate.exists() && valid_image_ext(&candidate) {
+                    return Some(candidate);
+                }
+            }
+            if let Some(parent) = base.parent() {
+                for name in [
+                    "cover.png",
+                    "cover.jpg",
+                    "cover.jpeg",
+                    "folder.png",
+                    "folder.jpg",
+                    "folder.jpeg",
+                ] {
+                    let candidate = parent.join(name);
+                    if candidate.exists() && valid_image_ext(&candidate) {
+                        return Some(candidate);
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    fn extract_embedded_cover(&self, path: &Path) -> Option<PathBuf> {
+        let ffmpeg = yyw::find_ffmpeg()?;
+        for source in self.media_candidates_for(path) {
+            if !source.exists() {
+                continue;
+            }
+            let mut hasher = DefaultHasher::new();
+            source.hash(&mut hasher);
+            let out = std::env::temp_dir().join(format!("yyw_cover_{:x}.png", hasher.finish()));
+            let mut command = Command::new(&ffmpeg);
+            command
+                .args([
+                    "-y",
+                    "-i",
+                    &source.to_string_lossy(),
+                    "-map",
+                    "0:v:0?",
+                    "-an",
+                    "-frames:v",
+                    "1",
+                    "-update",
+                    "1",
+                    &out.to_string_lossy(),
+                ])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null());
+            Self::hide_child_window(&mut command);
+            if command.status().ok()?.success() && out.exists() {
+                return Some(out);
+            }
+        }
+        None
+    }
+
+    fn find_ffprobe() -> Option<PathBuf> {
+        if let Some(ffmpeg) = yyw::find_ffmpeg() {
+            let ffprobe = ffmpeg.with_file_name(if cfg!(windows) {
+                "ffprobe.exe"
+            } else {
+                "ffprobe"
+            });
+            if ffprobe.exists() {
+                return Some(ffprobe);
+            }
+        }
+        Self::find_tool(if cfg!(windows) {
+            "ffprobe.exe"
+        } else {
+            "ffprobe"
+        })
+    }
+
+    fn probe_duration(path: &Path) -> Option<Duration> {
+        let Some(ffprobe) = Self::find_ffprobe() else {
+            return Self::probe_duration_with_ffmpeg(path);
+        };
+        let mut command = Command::new(ffprobe);
+        command
+            .args([
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
+                &path.to_string_lossy(),
+            ])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        Self::hide_child_window(&mut command);
+        let output = command.output().ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let text = String::from_utf8_lossy(&output.stdout);
+        let seconds = text.trim().parse::<f32>().ok()?;
+        Some(Duration::from_secs_f32(seconds.max(0.0)))
+    }
+
+    fn probe_duration_with_ffmpeg(path: &Path) -> Option<Duration> {
+        let ffmpeg = yyw::find_ffmpeg()?;
+        let mut command = Command::new(ffmpeg);
+        command
+            .args(["-i", &path.to_string_lossy()])
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped());
+        Self::hide_child_window(&mut command);
+        let output = command.output().ok()?;
+        let text = String::from_utf8_lossy(&output.stderr);
+        let duration = text
+            .lines()
+            .find_map(|line| line.split_once("Duration: ").map(|(_, rest)| rest))?
+            .split(',')
+            .next()?;
+        Self::parse_duration_text(duration.trim())
+    }
+
+    fn parse_duration_text(text: &str) -> Option<Duration> {
+        let mut parts = text.split(':');
+        let hours = parts.next()?.parse::<f32>().ok()?;
+        let minutes = parts.next()?.parse::<f32>().ok()?;
+        let seconds = parts.next()?.parse::<f32>().ok()?;
+        Some(Duration::from_secs_f32(
+            (hours * 3600.0 + minutes * 60.0 + seconds).max(0.0),
+        ))
+    }
+
+    fn extract_embedded_lyrics(&self, path: &Path) -> Option<String> {
+        let ffprobe = Self::find_ffprobe()?;
+        let source = self.related_source_for(path);
+        let mut command = Command::new(ffprobe);
+        command
+            .args([
+                "-v",
+                "quiet",
+                "-print_format",
+                "json",
+                "-show_entries",
+                "format_tags:stream_tags",
+                &source.to_string_lossy(),
+            ])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        Self::hide_child_window(&mut command);
+        let output = command.output().ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let value: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
+        Self::lyrics_from_probe_value(&value)
+    }
+
+    fn lyrics_from_probe_value(value: &serde_json::Value) -> Option<String> {
+        fn find_in_tags(tags: &serde_json::Map<String, serde_json::Value>) -> Option<String> {
+            for (key, value) in tags {
+                let key = key.to_lowercase();
+                if !key.contains("lyric") {
+                    continue;
+                }
+                let Some(text) = value.as_str() else {
+                    continue;
+                };
+                let text = text.trim();
+                if !text.is_empty() {
+                    return Some(text.to_string());
+                }
+            }
+            None
+        }
+
+        value
+            .get("format")
+            .and_then(|format| format.get("tags"))
+            .and_then(|tags| tags.as_object())
+            .and_then(find_in_tags)
+            .or_else(|| {
+                value
+                    .get("streams")
+                    .and_then(|streams| streams.as_array())
+                    .and_then(|streams| {
+                        streams.iter().find_map(|stream| {
+                            stream
+                                .get("tags")
+                                .and_then(|tags| tags.as_object())
+                                .and_then(find_in_tags)
+                        })
+                    })
+            })
+    }
+
+    fn format_lyric_timestamp(ms: u64) -> String {
+        let total_cs = ms / 10;
+        let minutes = total_cs / 6000;
+        let seconds = (total_cs / 100) % 60;
+        let centiseconds = total_cs % 100;
+        format!("[{minutes:02}:{seconds:02}.{centiseconds:02}]")
+    }
+
+    fn parse_netease_json_lyric_line(line: &str) -> Option<String> {
+        let value: serde_json::Value = serde_json::from_str(line).ok()?;
+        let text = value
+            .get("c")
+            .and_then(|chunks| chunks.as_array())
+            .map(|chunks| {
+                chunks
+                    .iter()
+                    .filter_map(|chunk| chunk.get("tx").and_then(|tx| tx.as_str()))
+                    .collect::<String>()
+            })?;
+        let text = text.trim();
+        if text.is_empty() {
+            return None;
+        }
+
+        if let Some(ms) = value.get("t").and_then(|t| t.as_u64()) {
+            Some(format!("{}{}", Self::format_lyric_timestamp(ms), text))
+        } else {
+            Some(text.to_string())
+        }
+    }
+
+    fn normalize_lyrics(raw: &str) -> String {
+        let lines: Vec<String> = raw
+            .lines()
+            .filter_map(|line| {
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
+                    return None;
+                }
+                if trimmed.starts_with('{') && trimmed.ends_with('}') {
+                    return Self::parse_netease_json_lyric_line(trimmed);
+                }
+                Some(trimmed.to_string())
+            })
+            .collect();
+
+        if lines.is_empty() {
+            "歌词为空".into()
+        } else {
+            lines.join("\n")
+        }
+    }
+
+    fn file_size_text(bytes: u64) -> String {
+        let units = ["B", "KB", "MB", "GB"];
+        let mut value = bytes as f64;
+        let mut unit = 0usize;
+        while value >= 1024.0 && unit + 1 < units.len() {
+            value /= 1024.0;
+            unit += 1;
+        }
+        if unit == 0 {
+            format!("{} {}", bytes, units[unit])
+        } else {
+            format!("{value:.2} {}", units[unit])
+        }
+    }
+
+    fn bitrate_text(bits_per_second: u64) -> String {
+        if bits_per_second >= 1_000_000 {
+            format!("{:.2} Mbps", bits_per_second as f64 / 1_000_000.0)
+        } else {
+            format!("{:.0} kbps", bits_per_second as f64 / 1000.0)
+        }
+    }
+
+    fn duration_detail_text(duration: Duration) -> String {
+        let secs = duration.as_secs();
+        let millis = duration.subsec_millis();
+        format!(
+            "{:02}:{:02}:{:02}.{:03}",
+            secs / 3600,
+            (secs % 3600) / 60,
+            secs % 60,
+            millis
+        )
+    }
+
+    fn media_info_for(path: &Path) -> MediaInfo {
+        if let Some(info) = Self::media_info_from_ffprobe(path) {
+            return info;
+        }
+        Self::media_info_from_ffmpeg(path)
+    }
+
+    fn media_info_from_ffprobe(path: &Path) -> Option<MediaInfo> {
+        let ffprobe = Self::find_ffprobe()?;
+        let mut command = Command::new(ffprobe);
+        command
+            .args([
+                "-v",
+                "quiet",
+                "-print_format",
+                "json",
+                "-show_format",
+                "-show_streams",
+                &path.to_string_lossy(),
+            ])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        Self::hide_child_window(&mut command);
+        let output = command.output().ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let value: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
+        let mut rows = Vec::new();
+        if let Ok(meta) = std::fs::metadata(path) {
+            rows.push(("文件大小".into(), Self::file_size_text(meta.len())));
+        }
+        if let Some(format) = value.get("format") {
+            if let Some(name) = format.get("format_long_name").and_then(|v| v.as_str()) {
+                rows.push(("格式".into(), name.to_string()));
+            } else if let Some(name) = format.get("format_name").and_then(|v| v.as_str()) {
+                rows.push(("格式".into(), name.to_string()));
+            }
+            if let Some(duration) = format
+                .get("duration")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<f32>().ok())
+            {
+                rows.push((
+                    "时长".into(),
+                    Self::duration_detail_text(Duration::from_secs_f32(duration.max(0.0))),
+                ));
+            }
+            if let Some(bit_rate) = format
+                .get("bit_rate")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<u64>().ok())
+            {
+                rows.push(("总体码率".into(), Self::bitrate_text(bit_rate)));
+            }
+        }
+        if let Some(streams) = value.get("streams").and_then(|v| v.as_array()) {
+            for stream in streams {
+                let codec_type = stream
+                    .get("codec_type")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("stream");
+                let label = if codec_type == "audio" {
+                    "音频流"
+                } else if codec_type == "video" {
+                    "视频/封面流"
+                } else {
+                    "数据流"
+                };
+                let mut details = Vec::new();
+                if let Some(codec) = stream.get("codec_name").and_then(|v| v.as_str()) {
+                    details.push(codec.to_string());
+                }
+                if let Some(rate) = stream.get("sample_rate").and_then(|v| v.as_str()) {
+                    details.push(format!("{rate} Hz"));
+                }
+                if let Some(channels) = stream.get("channels").and_then(|v| v.as_u64()) {
+                    details.push(format!("{channels} 声道"));
+                }
+                if let Some(bit_rate) = stream
+                    .get("bit_rate")
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| s.parse::<u64>().ok())
+                {
+                    details.push(Self::bitrate_text(bit_rate));
+                }
+                if let (Some(w), Some(h)) = (
+                    stream.get("width").and_then(|v| v.as_u64()),
+                    stream.get("height").and_then(|v| v.as_u64()),
+                ) {
+                    details.push(format!("{w}x{h}"));
+                }
+                if !details.is_empty() {
+                    rows.push((label.into(), details.join(" / ")));
+                }
+            }
+        }
+        if rows.is_empty() {
+            return None;
+        }
+        Some(MediaInfo {
+            title: path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string(),
+            path: path.to_path_buf(),
+            rows,
+            raw: String::from_utf8_lossy(&output.stdout).to_string(),
+        })
+    }
+
+    fn media_info_from_ffmpeg(path: &Path) -> MediaInfo {
+        let mut rows = Vec::new();
+        if let Ok(meta) = std::fs::metadata(path) {
+            rows.push(("文件大小".into(), Self::file_size_text(meta.len())));
+        }
+        let raw = yyw::find_ffmpeg()
+            .and_then(|ffmpeg| {
+                let mut command = Command::new(ffmpeg);
+                command
+                    .args(["-i", &path.to_string_lossy()])
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::piped());
+                Self::hide_child_window(&mut command);
+                command.output().ok()
+            })
+            .map(|output| String::from_utf8_lossy(&output.stderr).to_string())
+            .unwrap_or_else(|| "未找到 ffmpeg，无法读取媒体流信息。".into());
+
+        if let Some(duration) = raw
+            .lines()
+            .find_map(|line| line.split_once("Duration: ").map(|(_, rest)| rest))
+            .and_then(|rest| rest.split(',').next())
+            .and_then(|text| Self::parse_duration_text(text.trim()))
+        {
+            rows.push(("时长".into(), Self::duration_detail_text(duration)));
+        }
+        if let Some(bit_rate) = raw
+            .lines()
+            .find_map(|line| line.split_once("bitrate: ").map(|(_, rest)| rest))
+            .and_then(|rest| rest.split_whitespace().next())
+            .and_then(|value| value.parse::<u64>().ok())
+        {
+            rows.push(("总体码率".into(), Self::bitrate_text(bit_rate * 1000)));
+        }
+        for line in raw.lines().filter(|line| line.contains("Stream #")) {
+            if let Some((_, details)) = line.split_once(": Audio: ") {
+                rows.push(("音频流".into(), details.trim().to_string()));
+            } else if let Some((_, details)) = line.split_once(": Video: ") {
+                rows.push(("视频/封面流".into(), details.trim().to_string()));
+            }
+        }
+        if rows.is_empty() {
+            rows.push(("状态".into(), "无法读取媒体信息".into()));
+        }
+
+        MediaInfo {
+            title: path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string(),
+            path: path.to_path_buf(),
+            rows,
+            raw,
+        }
+    }
+
+    fn open_media_location(path: &Path) {
+        let mut command = Command::new("explorer");
+        command.arg("/select,").arg(path);
+        Self::hide_child_window(&mut command);
+        let _ = command.spawn();
+    }
+
+    fn media_context_menu(
+        &mut self,
+        response: &egui::Response,
+        ctx: &egui::Context,
+        path: PathBuf,
+    ) {
+        response.context_menu(|ui| {
+            if ui.button("播放").clicked() {
+                self.play_audio(ctx, &path);
+                ui.close_menu();
+            }
+            if ui.button("查看详细信息").clicked() {
+                self.media_info = Some(Self::media_info_for(&path));
+                ui.close_menu();
+            }
+            if ui.button("打开所在目录").clicked() {
+                Self::open_media_location(&path);
+                ui.close_menu();
+            }
+        });
+    }
+
+    fn load_media_sidecar(&mut self, ctx: &egui::Context, path: &Path) {
+        self.cover_texture = None;
+        self.cover_status = "未找到封面".into();
+        self.lyrics_text = "未找到歌词文件".into();
+        self.lyrics_status = "未找到歌词".into();
+
+        if let Some(lyrics) = self.find_lyrics_file(path) {
+            match std::fs::read_to_string(&lyrics) {
+                Ok(text) => {
+                    self.lyrics_text = Self::normalize_lyrics(&text);
+                    self.lyrics_status = format!(
+                        "歌词: {}",
+                        lyrics.file_name().unwrap_or_default().to_string_lossy()
+                    );
+                }
+                Err(_) => {
+                    self.lyrics_status = "歌词读取失败".into();
+                    self.lyrics_text = "歌词读取失败".into();
+                }
+            }
+        }
+        if self.lyrics_status == "未找到歌词" {
+            if let Some(text) = self.extract_embedded_lyrics(path) {
+                self.lyrics_text = Self::normalize_lyrics(&text);
+                self.lyrics_status = "歌词: 音频内嵌".into();
+            }
+        }
+
+        let cover = self
+            .find_cover_file(path)
+            .or_else(|| self.extract_embedded_cover(path));
+        if let Some(cover) = cover {
+            if let Some(image) = load_color_image(&cover) {
+                self.cover_texture = Some(ctx.load_texture("cover-art", image, Default::default()));
+                self.cover_status = format!(
+                    "封面: {}",
+                    cover.file_name().unwrap_or_default().to_string_lossy()
+                );
+            } else {
+                self.cover_status = "封面读取失败".into();
+            }
+        }
+    }
+
+    fn playback_position(&self) -> Duration {
+        let pos = self.playback_offset
+            + self
+                .sink
+                .as_ref()
+                .map(|sink| sink.get_pos())
+                .unwrap_or_default();
+        if let Some(duration) = self.playback_duration {
+            pos.min(duration)
+        } else {
+            pos
+        }
+    }
+
+    fn seek_playback(&mut self, seconds: f32) {
+        let Some(path) = self.current_path.clone() else {
+            return;
+        };
+        let target = Duration::from_secs_f32(seconds.max(0.0));
+
+        if let Some(sink) = &self.sink {
+            if sink.try_seek(target).is_ok() {
+                self.playback_offset = Duration::ZERO;
+                return;
+            }
+        }
+
+        let Ok(file) = File::open(&path) else {
+            self.status = "跳转失败：无法打开音频".into();
+            return;
+        };
+        let Ok(src) = Decoder::new(BufReader::new(file)) else {
+            self.status = "跳转失败：无法解码音频".into();
+            return;
+        };
+        let Some(ref h) = self.stream_handle else {
+            self.status = "跳转失败：没有音频输出设备".into();
+            return;
+        };
+        let Ok(sink) = Sink::try_new(h) else {
+            self.status = "跳转失败：无法创建播放器".into();
+            return;
+        };
+
+        let was_paused = self.paused;
+        if let Some(old) = self.sink.take() {
+            old.stop();
+        }
+        sink.append(src.skip_duration(target));
+        if was_paused {
+            sink.pause();
+        }
+        self.sink = Some(sink);
+        self.playback_offset = target;
+        self.paused = was_paused;
+    }
+
+    fn play_audio(&mut self, ctx: &egui::Context, path: &Path) {
         self.stop_playback();
-        let file = match std::fs::File::open(path) {
+        let file = match File::open(path) {
             Ok(f) => f,
             Err(_) => {
                 self.status = "播放失败".into();
                 return;
             }
         };
-        match Decoder::new(file) {
+        match Decoder::new(BufReader::new(file)) {
             Ok(src) => {
+                let duration = src.total_duration().or_else(|| Self::probe_duration(path));
                 if let Some(ref h) = self.stream_handle {
                     if let Ok(sink) = Sink::try_new(h) {
                         sink.append(src);
                         self.sink = Some(sink);
+                        self.current_path = Some(path.to_path_buf());
+                        self.playback_duration = duration;
+                        self.playback_offset = Duration::ZERO;
                         self.now_playing = format!(
                             "正在播放: {}",
                             path.file_name().unwrap_or_default().to_string_lossy()
                         );
                         self.paused = false;
                         self.status = "播放中".into();
+                        self.load_media_sidecar(ctx, path);
                         return;
                     }
                 }
@@ -1054,6 +1838,9 @@ impl StemStudio {
         }
         self.now_playing = "未播放".into();
         self.paused = false;
+        self.current_path = None;
+        self.playback_duration = None;
+        self.playback_offset = Duration::ZERO;
     }
 
     fn pause_resume(&mut self) {
@@ -1151,22 +1938,81 @@ impl eframe::App for StemStudio {
 
         egui::TopBottomPanel::bottom("player").show(ctx, |ui| {
             ui.horizontal(|ui| {
-                if ui.button("播放输入").clicked() {
-                    self.play_selected_input();
+                if let Some(texture) = &self.cover_texture {
+                    ui.image((texture.id(), egui::vec2(76.0, 76.0)));
+                } else {
+                    let (rect, _) =
+                        ui.allocate_exact_size(egui::vec2(76.0, 76.0), egui::Sense::hover());
+                    ui.painter().rect_filled(
+                        rect,
+                        egui::CornerRadius::same(4),
+                        egui::Color32::from_gray(36),
+                    );
+                    ui.painter().text(
+                        rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        "封面",
+                        egui::FontId::proportional(13.0),
+                        egui::Color32::GRAY,
+                    );
                 }
-                if ui.button("播放音轨").clicked() {
-                    self.play_selected_stem();
-                }
-                if ui
-                    .button(if self.paused { "继续" } else { "暂停" })
-                    .clicked()
-                {
-                    self.pause_resume();
-                }
-                if ui.button("停止播放").clicked() {
-                    self.stop_playback();
-                }
-                ui.label(&self.now_playing);
+
+                ui.vertical(|ui| {
+                    ui.horizontal(|ui| {
+                        if ui.button("播放输入").clicked() {
+                            self.play_selected_input(ctx);
+                        }
+                        if ui.button("播放音轨").clicked() {
+                            self.play_selected_stem(ctx);
+                        }
+                        if ui
+                            .button(if self.paused { "继续" } else { "暂停" })
+                            .clicked()
+                        {
+                            self.pause_resume();
+                        }
+                        if ui.button("停止播放").clicked() {
+                            self.stop_playback();
+                        }
+                    });
+
+                    ui.label(&self.now_playing);
+                    let pos = self.playback_position();
+                    let dur = self.playback_duration.unwrap_or_default();
+                    ui.horizontal(|ui| {
+                        ui.label(format_time(pos));
+                        let mut seconds = pos.as_secs_f32();
+                        let max = dur.as_secs_f32().max(1.0);
+                        let response = ui.add(
+                            egui::Slider::new(&mut seconds, 0.0..=max)
+                                .show_value(false)
+                                .text("播放进度"),
+                        );
+                        if response.changed() {
+                            self.seek_playback(seconds);
+                        }
+                        ui.label(format_time(dur));
+                    });
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "{} | {}",
+                            self.cover_status, self.lyrics_status
+                        ))
+                        .small()
+                        .color(egui::Color32::GRAY),
+                    );
+                });
+
+                ui.separator();
+                ui.vertical(|ui| {
+                    ui.label("歌词");
+                    egui::ScrollArea::vertical()
+                        .max_height(76.0)
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            ui.label(egui::RichText::new(&self.lyrics_text).small());
+                        });
+                });
             });
         });
 
@@ -1218,7 +2064,6 @@ impl eframe::App for StemStudio {
                         for t in &names {
                             if ui.selectable_label(self.separator == *t, t).clicked() {
                                 self.separator = t.clone();
-                                // reset mode/model to first of new separator
                                 if let Some(cfg) = find_separator(&self.separators, t) {
                                     if let Some(m) = cfg.modes.first() {
                                         self.mode = m.clone();
@@ -1289,140 +2134,253 @@ impl eframe::App for StemStudio {
             ui.separator();
 
             let avail = ui.available_size();
-            let left_w = avail.x * 0.55;
-            let table_h = (avail.y - 34.0).max(180.0);
+            let gap_w = 10.0;
+            let left_w = ((avail.x - gap_w) * 0.56).clamp(360.0, (avail.x - gap_w) * 0.68);
+            let right_w = (avail.x - left_w - gap_w).max(240.0);
+            let table_h = avail.y.max(220.0);
 
-            ui.horizontal(|ui| {
-                ui.vertical(|ui| {
-                    ui.set_min_width(left_w);
-                    ui.heading("输入音频");
-                    let rh = 24.0;
-                    TableBuilder::new(ui)
-                        .striped(true)
-                        .min_scrolled_height(table_h)
-                        .max_scroll_height(table_h)
-                        .auto_shrink([false, false])
-                        .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-                        .column(Column::initial(260.0))
-                        .column(Column::initial(70.0))
-                        .column(Column::initial(120.0))
-                        .column(Column::remainder())
-                        .header(rh, |mut h| {
-                            h.col(|ui| {
-                                ui.strong("文件");
-                            });
-                            h.col(|ui| {
-                                ui.strong("类型");
-                            });
-                            h.col(|ui| {
-                                ui.strong("状态");
-                            });
-                            h.col(|ui| {
-                                ui.strong("路径");
-                            });
-                        })
-                        .body(|body| {
-                            body.rows(rh, self.items.len(), |mut row| {
-                                let i = row.index();
-                                let item = &self.items[i];
-                                let sel = self.selected_items.contains(&i);
-                                if sel {
-                                    row.set_selected(true);
-                                }
-                                let ext = item
-                                    .path
-                                    .extension()
-                                    .unwrap_or_default()
-                                    .to_string_lossy()
-                                    .to_uppercase();
-                                let pt = item
-                                    .process_path
-                                    .as_ref()
-                                    .map(|p| p.to_string_lossy().to_string())
-                                    .unwrap_or_else(|| item.path.to_string_lossy().to_string());
-                                let sc = status_color(&item.status);
-                                row.col(|ui| {
-                                    if ui
-                                        .selectable_label(
+            ui.horizontal_top(|ui| {
+                ui.allocate_ui_with_layout(
+                    egui::vec2(left_w, table_h),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| {
+                        ui.set_width(left_w);
+                        ui.heading("输入音频");
+                        let rh = 24.0;
+                        TableBuilder::new(ui)
+                            .striped(true)
+                            .min_scrolled_height(table_h)
+                            .max_scroll_height(table_h)
+                            .auto_shrink([false, false])
+                            .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                            .column(Column::remainder())
+                            .column(Column::initial(56.0))
+                            .column(Column::initial(104.0))
+                            .column(Column::initial(128.0))
+                            .header(rh, |mut h| {
+                                h.col(|ui| {
+                                    ui.strong("文件");
+                                });
+                                h.col(|ui| {
+                                    ui.strong("类型");
+                                });
+                                h.col(|ui| {
+                                    ui.strong("状态");
+                                });
+                                h.col(|ui| {
+                                    ui.strong("路径");
+                                });
+                            })
+                            .body(|body| {
+                                body.rows(rh, self.items.len(), |mut row| {
+                                    let i = row.index();
+                                    let item_path = self.items[i].path.clone();
+                                    let item_status = self.items[i].status.clone();
+                                    let item_process_path = self.items[i].process_path.clone();
+                                    let sel = self.selected_items.contains(&i);
+                                    if sel {
+                                        row.set_selected(true);
+                                    }
+                                    let ext = item_path
+                                        .extension()
+                                        .unwrap_or_default()
+                                        .to_string_lossy()
+                                        .to_uppercase();
+                                    let pt = item_process_path
+                                        .as_ref()
+                                        .map(|p| p.to_string_lossy().to_string())
+                                        .unwrap_or_else(|| item_path.to_string_lossy().to_string());
+                                    let compact_pt = compact_parent_path(Path::new(&pt), 28);
+                                    let sc = status_color(&item_status);
+                                    let media_path = item_process_path
+                                        .clone()
+                                        .unwrap_or_else(|| item_path.clone());
+                                    row.col(|ui| {
+                                        let response = ui.selectable_label(
                                             sel,
-                                            item.path
+                                            item_path
                                                 .file_name()
                                                 .unwrap_or_default()
                                                 .to_string_lossy(),
-                                        )
-                                        .clicked()
-                                    {
-                                        if sel {
-                                            self.selected_items.remove(&i);
-                                        } else {
-                                            self.selected_items.clear();
-                                            self.selected_items.insert(i);
+                                        );
+                                        if response.clicked() {
+                                            if sel {
+                                                self.selected_items.remove(&i);
+                                            } else {
+                                                self.selected_items.clear();
+                                                self.selected_items.insert(i);
+                                            }
                                         }
-                                    }
-                                });
-                                row.col(|ui| {
-                                    ui.label(&ext);
-                                });
-                                row.col(|ui| {
-                                    ui.label(egui::RichText::new(&item.status).color(sc));
-                                });
-                                row.col(|ui| {
-                                    ui.label(&pt);
+                                        self.media_context_menu(&response, ctx, media_path.clone());
+                                    });
+                                    row.col(|ui| {
+                                        ui.label(&ext);
+                                    });
+                                    row.col(|ui| {
+                                        ui.label(egui::RichText::new(&item_status).color(sc));
+                                    });
+                                    row.col(|ui| {
+                                        ui.label(&compact_pt).on_hover_text(&pt);
+                                    });
                                 });
                             });
-                        });
-                });
+                    },
+                );
 
                 ui.separator();
 
-                ui.vertical(|ui| {
-                    ui.set_min_width(avail.x - left_w);
-                    ui.heading("输出音轨");
-                    let rh = 23.0;
-                    TableBuilder::new(ui)
-                        .striped(true)
-                        .min_scrolled_height(table_h)
-                        .max_scroll_height(table_h)
-                        .auto_shrink([false, false])
-                        .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-                        .column(Column::initial(180.0))
-                        .column(Column::initial(80.0))
-                        .column(Column::remainder())
-                        .header(rh, |mut h| {
-                            h.col(|ui| {
-                                ui.strong("歌曲");
-                            });
-                            h.col(|ui| {
-                                ui.strong("音轨");
-                            });
-                            h.col(|ui| {
-                                ui.strong("路径");
-                            });
-                        })
-                        .body(|body| {
-                            body.rows(rh, self.stems.len(), |mut row| {
-                                let i = row.index();
-                                let stem = &self.stems[i];
-                                let sel = self.selected_stem == Some(i);
-                                row.set_selected(sel);
-                                row.col(|ui| {
-                                    if ui.selectable_label(sel, &stem.track_name).clicked() {
+                ui.allocate_ui_with_layout(
+                    egui::vec2(right_w, table_h),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| {
+                        ui.set_width(right_w);
+                        ui.horizontal(|ui| {
+                            ui.heading(format!("输出音轨 ({})", self.stems.len()));
+                            if ui.small_button("刷新").clicked() {
+                                self.scan_stems();
+                            }
+                        });
+                        if self.stems.is_empty() {
+                            ui.label(
+                                egui::RichText::new("当前输出目录没有可播放的分轨")
+                                    .small()
+                                    .color(egui::Color32::GRAY),
+                            );
+                        }
+                        ui.add_space(2.0);
+                        egui::ScrollArea::vertical()
+                            .id_salt("stems_scroll")
+                            .max_height(table_h)
+                            .auto_shrink([false, false])
+                            .show_rows(ui, 72.0, self.stems.len(), |ui, range| {
+                                for i in range {
+                                    let track_name = self.stems[i].track_name.clone();
+                                    let stem_name = self.stems[i].stem_name.clone();
+                                    let path = self.stems[i].path.clone();
+                                    let full_path_text = path.to_string_lossy().to_string();
+                                    let sel = self.selected_stem == Some(i);
+                                    let card_w = ui.available_width().max(220.0);
+                                    let card_h = 64.0;
+                                    let (rect, response) = ui.allocate_exact_size(
+                                        egui::vec2(card_w, card_h),
+                                        egui::Sense::click(),
+                                    );
+                                    let hovered = response.hovered();
+                                    let fill = if sel {
+                                        egui::Color32::from_rgb(54, 67, 84)
+                                    } else if hovered {
+                                        egui::Color32::from_rgb(48, 52, 59)
+                                    } else {
+                                        ui.visuals().widgets.noninteractive.bg_fill
+                                    };
+                                    let stroke = if sel {
+                                        egui::Stroke::new(1.0, ui.visuals().selection.stroke.color)
+                                    } else {
+                                        ui.visuals().widgets.noninteractive.bg_stroke
+                                    };
+                                    ui.painter().rect(
+                                        rect.shrink(2.0),
+                                        egui::CornerRadius::same(6),
+                                        fill,
+                                        stroke,
+                                        egui::StrokeKind::Outside,
+                                    );
+                                    #[allow(deprecated)]
+                                    {
+                                        ui.allocate_ui_at_rect(rect.shrink(10.0), |ui| {
+                                            ui.set_width((card_w - 20.0).max(160.0));
+                                            ui.label(
+                                                egui::RichText::new(track_name)
+                                                    .strong()
+                                                    .color(ui.visuals().text_color()),
+                                            );
+                                            ui.add_space(4.0);
+                                            ui.horizontal(|ui| {
+                                                ui.label(
+                                                    egui::RichText::new("音轨")
+                                                        .small()
+                                                        .color(egui::Color32::GRAY),
+                                                );
+                                                ui.label(
+                                                    egui::RichText::new(stem_name).small().color(
+                                                        egui::Color32::from_rgb(126, 200, 255),
+                                                    ),
+                                                );
+                                            });
+                                        });
+                                    }
+                                    let response = response.on_hover_text(full_path_text);
+                                    if response.clicked() {
                                         self.selected_stem = Some(i);
                                     }
-                                });
-                                row.col(|ui| {
-                                    ui.label(&stem.stem_name);
-                                });
-                                row.col(|ui| {
-                                    ui.label(stem.path.to_string_lossy());
-                                });
+                                    if response.double_clicked() {
+                                        self.selected_stem = Some(i);
+                                        self.play_audio(ctx, &path);
+                                    }
+                                    self.media_context_menu(&response, ctx, path);
+                                }
                             });
-                        });
-                });
+                    },
+                );
             });
         });
 
-        if running {
+        if let Some(info) = self.media_info.clone() {
+            let mut open = true;
+            egui::Window::new("媒体详细信息")
+                .open(&mut open)
+                .resizable(true)
+                .default_width(560.0)
+                .default_height(420.0)
+                .show(ctx, |ui| {
+                    ui.heading(&info.title);
+                    ui.label(
+                        egui::RichText::new(info.path.to_string_lossy())
+                            .small()
+                            .color(egui::Color32::GRAY),
+                    );
+                    ui.separator();
+                    egui::Grid::new("media_info_grid")
+                        .num_columns(2)
+                        .spacing([18.0, 8.0])
+                        .striped(true)
+                        .show(ui, |ui| {
+                            for (key, value) in &info.rows {
+                                ui.strong(key);
+                                ui.label(value);
+                                ui.end_row();
+                            }
+                        });
+                    ui.separator();
+                    egui::CollapsingHeader::new("原始输出")
+                        .default_open(false)
+                        .show(ui, |ui| {
+                            egui::ScrollArea::vertical()
+                                .max_height(160.0)
+                                .show(ui, |ui| {
+                                    ui.label(egui::RichText::new(&info.raw).monospace().small());
+                                });
+                        });
+                    ui.horizontal(|ui| {
+                        if ui.button("打开所在目录").clicked() {
+                            Self::open_media_location(&info.path);
+                        }
+                        if ui.button("关闭").clicked() {
+                            self.media_info = None;
+                        }
+                    });
+                });
+            if !open {
+                self.media_info = None;
+            }
+        }
+
+        let playback_active = self
+            .sink
+            .as_ref()
+            .map(|sink| !sink.empty())
+            .unwrap_or(false);
+        if running || playback_active {
             ctx.request_repaint_after(Duration::from_millis(80));
         }
     }
@@ -1512,7 +2470,7 @@ impl StemStudio {
         let _ = command.spawn();
     }
 
-    fn play_selected_input(&mut self) {
+    fn play_selected_input(&mut self, ctx: &egui::Context) {
         let path = self
             .selected_items
             .iter()
@@ -1520,22 +2478,29 @@ impl StemStudio {
             .and_then(|&i| self.items.get(i))
             .and_then(|it| it.process_path.clone());
         match path {
-            Some(p) => self.play_audio(&p),
+            Some(p) => self.play_audio(ctx, &p),
             None => {
                 self.status = "请先选择输入音频".into();
             }
         }
     }
 
-    fn play_selected_stem(&mut self) {
+    fn play_selected_stem(&mut self, ctx: &egui::Context) {
+        if self.stems.is_empty() {
+            self.scan_stems();
+        }
         let path = self
             .selected_stem
             .and_then(|i| self.stems.get(i))
             .map(|s| s.path.clone());
         match path {
-            Some(p) => self.play_audio(&p),
+            Some(p) => self.play_audio(ctx, &p),
             None => {
-                self.status = "请先选择输出音轨".into();
+                if self.stems.is_empty() {
+                    self.status = "未找到输出音轨，请先分离或检查输出目录".into();
+                } else {
+                    self.status = format!("请先在右侧选择输出音轨；已找到 {} 个", self.stems.len());
+                }
             }
         }
     }
@@ -1578,7 +2543,11 @@ impl StemStudio {
 
             // run metadata stamping in background (non-blocking)
             let output = PathBuf::from(&self.output_dir);
-            let items: Vec<_> = self.items.iter().filter_map(|it| it.process_path.clone()).collect();
+            let items: Vec<_> = self
+                .items
+                .iter()
+                .filter_map(|it| it.process_path.clone())
+                .collect();
             std::thread::spawn(move || {
                 for src in &items {
                     let _ = yyw::stamp_metadata_for_source(src, &output);
@@ -1591,45 +2560,15 @@ impl StemStudio {
 
 fn main() {
     env_logger::init();
-
-    // generate a simple teal icon (32x32)
-    let icon = {
-        let size = 32u32;
-        let mut rgba = vec![0u8; (size * size * 4) as usize];
-        let accent = egui::Color32::from_rgb(45, 212, 191);
-        for y in 0..size {
-            for x in 0..size {
-                let i = ((y * size + x) * 4) as usize;
-                // rounded rect shape
-                let cx = x as f32 - size as f32 / 2.0;
-                let cy = y as f32 - size as f32 / 2.0;
-                let r = size as f32 / 2.0 - 2.0;
-                let d = (cx * cx + cy * cy).sqrt();
-                let alpha = if d < r - 3.0 {
-                    255
-                } else if d < r {
-                    ((r - d) / 3.0 * 255.0) as u8
-                } else {
-                    0
-                };
-                rgba[i] = accent.r();
-                rgba[i + 1] = accent.g();
-                rgba[i + 2] = accent.b();
-                rgba[i + 3] = alpha;
-            }
-        }
-        egui::IconData {
-            rgba,
-            width: size,
-            height: size,
-        }
-    };
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_inner_size([1180.0, 760.0])
+        .with_min_inner_size([980.0, 640.0]);
+    if let Some(icon) = load_png_icon(include_bytes!("../radian.png")) {
+        viewport = viewport.with_icon(icon);
+    }
 
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_icon(icon)
-            .with_inner_size([1180.0, 760.0])
-            .with_min_inner_size([980.0, 640.0]),
+        viewport,
         ..Default::default()
     };
     let _ = eframe::run_native(

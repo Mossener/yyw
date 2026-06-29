@@ -148,13 +148,34 @@ pub enum TaskMessage {
     Done,
 }
 
-pub fn find_tool(name: &str) -> Option<PathBuf> {
-    if let Ok(cwd) = std::env::current_dir() {
-        let local = cwd.join("tools").join(name);
-        if local.exists() {
-            return Some(local);
+fn push_tool_roots(roots: &mut Vec<PathBuf>, root: PathBuf) {
+    for dir in root.ancestors().take(4) {
+        let dir = dir.to_path_buf();
+        if !roots.contains(&dir) {
+            roots.push(dir);
         }
     }
+}
+
+pub fn find_tool(name: &str) -> Option<PathBuf> {
+    let mut roots = Vec::new();
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            push_tool_roots(&mut roots, dir.to_path_buf());
+        }
+    }
+    if let Ok(cwd) = std::env::current_dir() {
+        push_tool_roots(&mut roots, cwd);
+    }
+
+    for root in roots {
+        for candidate in [root.join("tools").join(name), root.join(name)] {
+            if candidate.exists() {
+                return Some(candidate);
+            }
+        }
+    }
+
     if let Ok(paths) = std::env::var("PATH") {
         for dir in std::env::split_paths(&paths) {
             let c = dir.join(name);
@@ -546,12 +567,6 @@ pub fn run_separation(
 }
 
 pub fn find_ffmpeg() -> Option<PathBuf> {
-    if let Ok(cwd) = std::env::current_dir() {
-        let local = cwd.join("tools").join("ffmpeg.exe");
-        if local.exists() {
-            return Some(local);
-        }
-    }
     find_tool("ffmpeg.exe")
 }
 
@@ -560,21 +575,35 @@ pub fn transfer_metadata(source_audio: &Path, stem_wav: &Path) -> Option<PathBuf
     let out = stem_wav.with_extension("flac");
     let mut cmd = Command::new(&ffmpeg);
     cmd.args([
-        "-y", "-i", &stem_wav.to_string_lossy(),
-        "-i", &source_audio.to_string_lossy(),
-        "-map", "0:a",
-        "-map_metadata", "1",
-        "-map", "1:v?",
-        "-c:a", "flac",
-        "-disposition:v", "attached_pic",
+        "-y",
+        "-i",
+        &stem_wav.to_string_lossy(),
+        "-i",
+        &source_audio.to_string_lossy(),
+        "-map",
+        "0:a",
+        "-map_metadata",
+        "1",
+        "-map",
+        "1:v?",
+        "-c:a",
+        "flac",
+        "-disposition:v",
+        "attached_pic",
         &out.to_string_lossy(),
     ])
     .stdout(Stdio::null())
     .stderr(Stdio::null());
     #[cfg(windows)]
-    { cmd.creation_flags(0x08000000); }
+    {
+        cmd.creation_flags(0x08000000);
+    }
     let status = cmd.status().ok()?;
-    if status.success() { Some(out) } else { None }
+    if status.success() {
+        Some(out)
+    } else {
+        None
+    }
 }
 
 pub fn stamp_metadata_for_source(source_audio: &Path, output_dir: &Path) -> u32 {
