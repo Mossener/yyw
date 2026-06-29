@@ -366,3 +366,53 @@ pub fn run_separation(
     let _ = sender.send(TaskMessage::Status(format!("完成 {}, 失败 {}", ok, fail)));
     let _ = sender.send(TaskMessage::Done);
 }
+
+pub fn find_ffmpeg() -> Option<PathBuf> {
+    if let Ok(cwd) = std::env::current_dir() {
+        let local = cwd.join("tools").join("ffmpeg.exe");
+        if local.exists() { return Some(local); }
+    }
+    find_tool("ffmpeg.exe")
+}
+
+pub fn transfer_metadata(source_audio: &Path, stem_wav: &Path) -> Option<PathBuf> {
+    let ffmpeg = find_ffmpeg()?;
+    let out = stem_wav.with_extension("flac");
+    let status = Command::new(&ffmpeg)
+        .args([
+            "-y", "-i", &stem_wav.to_string_lossy(),
+            "-i", &source_audio.to_string_lossy(),
+            "-map", "0:a",
+            "-map_metadata", "1",
+            "-map", "1:v?",
+            "-c:a", "flac",
+            "-disposition:v", "attached_pic",
+            &out.to_string_lossy(),
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .ok()?;
+    if status.success() {
+        let _ = std::fs::remove_file(stem_wav);
+        Some(out)
+    } else {
+        None
+    }
+}
+
+pub fn stamp_metadata_for_source(source_audio: &Path, output_dir: &Path) -> u32 {
+    let mut count = 0u32;
+    for entry in WalkDir::new(output_dir).into_iter().filter_map(|e| e.ok()) {
+        if entry.file_type().is_file() {
+            if let Some(ext) = entry.path().extension() {
+                if ext == "wav" && entry.path().parent().map(|p| p != output_dir).unwrap_or(false) {
+                    if transfer_metadata(source_audio, entry.path()).is_some() {
+                        count += 1;
+                    }
+                }
+            }
+        }
+    }
+    count
+}

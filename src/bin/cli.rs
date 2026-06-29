@@ -165,4 +165,17 @@ fn main() {
 
     *running.lock().unwrap() = false;
     eprintln!("\nDone. Output: {}", output_dir.display());
+
+    // Transfer metadata (cover + lyrics) from source to stems
+    if stem_studio::find_ffmpeg().is_some() {
+        eprintln!("Transferring metadata...");
+        for item in &items {
+            if let Some(ref src) = item.process_path {
+                let n = stem_studio::stamp_metadata_for_source(src, &output_dir);
+                if n > 0 { eprintln!("  {} -> {} stems stamped", src.display(), n); }
+            }
+        }
+    } else {
+        eprintln!("ffmpeg not found, skip metadata transfer (put ffmpeg.exe in tools/)");
+    }
 }

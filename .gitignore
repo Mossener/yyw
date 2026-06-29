@@ -2,9 +2,11 @@
 /target
 /target-ui
 
-# binaries (keep tools/ exception below)
+# binaries (keep tools/ exceptions below)
 *.exe
-!tools/*.exe
+!tools/ncmdump.exe
+!tools/ffmpeg.exe
+tools/*.dll
 
 # portable runtime
 /runtime
