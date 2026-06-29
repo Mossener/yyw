@@ -1,4 +1,4 @@
-# Stem Studio
+# yyw
 
 用于扫描 NCM 与已经存在的 MP3、FLAC、WAV 等音频，并通过 Demucs 做音源分离。这个 GUI 不执行 NCM 解密或转换；如果同名转换结果已经存在，会自动使用该音频继续处理。
 

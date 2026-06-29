@@ -5,13 +5,13 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
 
-use stem_studio::{
+use yyw::{
     find_demucs, find_tool, load_separators, run_separation, scan_inputs, AudioItem, Settings, TaskMessage,
 };
 
 #[derive(Parser)]
-#[command(name = "stem-cli", about = "NCM conversion & stem separation CLI")]
-struct Args {
+    #[command(name = "yyw-cli", about = "NCM conversion & stem separation CLI")]
+    struct Args {
     /// Input file or directory
     #[arg(short, long, default_value = r"G:\CloudMusic\VipSongsDownload")]
     input: String,
@@ -81,7 +81,7 @@ fn main() {
             path: input_path.clone(),
             status: "待处理".into(),
             process_path: if is_ncm { None } else { Some(input_path.clone()) },
-            kind: if is_ncm { stem_studio::AudioKind::Ncm } else { stem_studio::AudioKind::Normal },
+            kind: if is_ncm { yyw::AudioKind::Ncm } else { yyw::AudioKind::Normal },
         });
     } else {
         eprintln!("Error: input path does not exist: {}", args.input);
@@ -96,10 +96,10 @@ fn main() {
     // Convert-only mode
     if args.convert_only {
         for item in &items {
-            if matches!(item.kind, stem_studio::AudioKind::Ncm) {
+            if matches!(item.kind, yyw::AudioKind::Ncm) {
                 if let Some(ref np) = ncmdump_path {
                     eprintln!("Converting: {}", item.path.display());
-                    match stem_studio::convert_ncm_sync(np, &item.path, item.path.parent().unwrap_or(std::path::Path::new("."))) {
+                    match yyw::convert_ncm_sync(np, &item.path, item.path.parent().unwrap_or(std::path::Path::new("."))) {
                         Ok(c) => eprintln!("  -> {}", c.display()),
                         Err(e) => eprintln!("  FAIL: {e}"),
                     }
@@ -165,17 +165,4 @@ fn main() {
 
     *running.lock().unwrap() = false;
     eprintln!("\nDone. Output: {}", output_dir.display());
-
-    // Transfer metadata (cover + lyrics) from source to stems
-    if stem_studio::find_ffmpeg().is_some() {
-        eprintln!("Transferring metadata...");
-        for item in &items {
-            if let Some(ref src) = item.process_path {
-                let n = stem_studio::stamp_metadata_for_source(src, &output_dir);
-                if n > 0 { eprintln!("  {} -> {} stems stamped", src.display(), n); }
-            }
-        }
-    } else {
-        eprintln!("ffmpeg not found, skip metadata transfer (put ffmpeg.exe in tools/)");
-    }
 }

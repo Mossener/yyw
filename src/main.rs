@@ -17,7 +17,7 @@ use walkdir::WalkDir;
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 
-const APP_NAME: &str = "Stem Studio";
+const APP_NAME: &str = "yyw";
 const SETTINGS_FILE: &str = "stem_studio_settings.json";
 const DEFAULT_SOURCE: &str = r"G:\CloudMusic\VipSongsDownload";
 const DEFAULT_OUTPUT: &str = "stems_output";

@@ -45,6 +45,6 @@ if exist "%TCDIR%\avcodec-62.dll" (
 
 echo.
 echo [3/3] Done.
-echo Launch with: stem-studio.exe
+echo Launch with: yyw.exe
 echo Or: run_portable.bat
 pause

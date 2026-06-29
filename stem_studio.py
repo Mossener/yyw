@@ -15,7 +15,7 @@ import tkinter as tk
 from tkinter import ttk
 
 
-APP_NAME = "Stem Studio"
+APP_NAME = "yyw"
 DEFAULT_SOURCE = r"G:\CloudMusic\VipSongsDownload"
 DEFAULT_OUTPUT = Path.cwd() / "stems_output"
 SETTINGS_FILE = Path.cwd() / "stem_studio_settings.json"

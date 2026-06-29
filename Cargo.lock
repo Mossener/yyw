@@ -3578,23 +3578,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
-name = "stem-studio"
-version = "0.1.0"
-dependencies = [
- "clap",
- "eframe",
- "egui",
- "egui_extras",
- "env_logger",
- "log",
- "rfd",
- "rodio",
- "serde",
- "serde_json",
- "walkdir",
-]
-
-[[package]]
 name = "strict-num"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4885,6 +4868,23 @@ dependencies = [
  "quote",
  "syn",
  "synstructure",
+]
+
+[[package]]
+name = "yyw"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "eframe",
+ "egui",
+ "egui_extras",
+ "env_logger",
+ "log",
+ "rfd",
+ "rodio",
+ "serde",
+ "serde_json",
+ "walkdir",
 ]
 
 [[package]]

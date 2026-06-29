@@ -9,4 +9,4 @@ set PYTHONIOENCODING=utf-8
 set PYTHONUTF8=1
 
 :: 启动
-start "" "%~dp0stem-studio.exe"
+start "" "%~dp0yyw.exe"

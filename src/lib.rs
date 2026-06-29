@@ -362,6 +362,14 @@ pub fn run_separation(
             }
         }
         let _ = sender.send(TaskMessage::Progress(r as f32 / total as f32));
+
+        // stamp metadata after each track completes
+        if let Some(ref src) = item.process_path {
+            let n = stamp_metadata_for_source(src, output_dir);
+            if n > 0 {
+                let _ = sender.send(TaskMessage::Log(format!("Metadata stamped: {} stems\n", n)));
+            }
+        }
     }
     let _ = sender.send(TaskMessage::Status(format!("完成 {}, 失败 {}", ok, fail)));
     let _ = sender.send(TaskMessage::Done);
