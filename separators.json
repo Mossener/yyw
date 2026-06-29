@@ -1,0 +1,32 @@
+[
+  {
+    "name": "Demucs",
+    "command": ["python", "-m", "demucs"],
+    "models": ["htdemucs", "htdemucs_ft", "mdx_extra", "htdemucs_6s"],
+    "modes": ["vocals", "four_stems", "six_stems"],
+    "args_before": ["-n", "{model}", "-o", "{output}"],
+    "two_stem_flag": "--two-stems=vocals",
+    "device_flag": "-d",
+    "stems_mode": "flag"
+  },
+  {
+    "name": "Spleeter",
+    "command": ["python", "-m", "spleeter", "separate"],
+    "models": ["spleeter:2stems", "spleeter:4stems", "spleeter:5stems"],
+    "modes": ["2stems", "4stems", "5stems"],
+    "args_before": ["-p", "{model}", "-o", "{output}"],
+    "two_stem_flag": "",
+    "device_flag": "",
+    "stems_mode": "model"
+  },
+  {
+    "name": "UVR",
+    "command": ["python", "-m", "uvr"],
+    "models": ["MDX-Net", "BS-Roformer", "VR-Arch", "Demucs"],
+    "modes": ["vocals", "instrumental", "all"],
+    "args_before": ["--model", "{model}", "--output", "{output}"],
+    "two_stem_flag": "",
+    "device_flag": "--device",
+    "stems_mode": "model"
+  }
+]

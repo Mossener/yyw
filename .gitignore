@@ -1,0 +1,26 @@
+# Rust build
+/target
+/target-ui
+
+# binaries (keep tools/ exception below)
+*.exe
+!tools/*.exe
+
+# portable runtime
+/runtime
+
+# output
+/stems_output
+
+# settings with personal paths
+stem_studio_settings.json
+settings.json
+
+# Python
+__pycache__
+*.pyc
+*.pyo
+
+# OS
+.DS_Store
+Thumbs.db

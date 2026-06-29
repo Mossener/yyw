@@ -1,0 +1,155 @@
+# ncmdump
+
+使用本程序可将下载的网易云音乐缓存文件（ncm）转换为 mp3 或 flac 格式
+
+## 简介
+
+该版本为最早的 C++ 版本，也是作者开发的市面上第一个支持 ncm 转换的程序
+
+源码复刻自 anonymous5l/ncmdump (2021年10月6日，原作者已经删库)
+
+感谢前辈的付出！此版本做了全操作系统下的的跨平台编译移植，修复了一些内存溢出的问题。
+
+1.3.0 版本更新说明：因为之前有较多 Issue 反馈无法解密带有特殊字符的文件名，例如中文、日文、韩文或者是表情符号等，在1.3.0以及之后的版本彻底修复了这个问题，所有的 UTF-8 字符都可以正常解密。并且还自带了 dll 的构建，可以供其他应用程序（C#、Python、Java等）调用。
+
+## 使用
+
+注意：网易云音乐 3.0 之后的某些版本，下载的 ncm 文件会出现不内置歌曲专辑的封面图片的情况，所需的封面图数据需要从网络获取，介于在一个小工具中嵌入庞大网络库的非必要性，可以移步我的另一个仓库 [ncmdump-go](https://git.taurusxin.com/taurusxin/ncmdump-go) 或者使用基于此项目开发的可视化 GUI 程序 [ncmdump-gui](https://git.taurusxin.com/taurusxin/ncmdump-gui)，其中后者基于前者，均完全使用 Golang 重写，并支持自动从元数据读取封面信息后从网络获取封面图并嵌入到目标音乐文件。
+
+### 命令行工具
+
+从 [Release](https://github.com/taurusxin/ncmdump/releases) 下载最新版本的对应系统的已编译好的二进制文件
+
+使用 `-h` 或 `--help` 参数来打印帮助
+
+```shell
+ncmdump -h
+```
+
+使用 `-v` 或 `--version` 参数来打印版本信息
+
+```shell
+ncmdump -v
+```
+
+处理单个或多个文件
+
+```shell
+ncmdump 1.ncm 2.ncm...
+```
+
+使用 `-d` 参数来指定一个文件夹，对文件夹下的所有以 ncm 为扩展名的文件进行批量处理
+
+```shell
+ncmdump -d source_dir
+```
+
+使用 `-r` 配合 `-d` 参数来递归处理文件夹下的所有以 ncm 为扩展名的文件
+
+```shell
+ncmdump -d source_dir -r
+```
+
+使用 `-m` 参数来删除源文件若正确处理
+
+```shell
+ncmdump -m
+```
+
+使用 `-o` 参数来指定输出目录，将转换后的文件输出到指定目录，该参数支持与 `-r` 参数一起使用
+
+```shell
+# 处理单个或多个文件并输出到指定目录
+ncmdump 1.ncm 2.ncm -o output_dir
+
+# 处理文件夹下的所有以 ncm 为扩展名并输出到指定目录，不包含子文件夹
+ncmdump -d source_dir -o output_dir
+
+# 递归处理文件夹并输出到指定目录，并保留目录结构
+ncmdump -d source_dir -o output_dir -r
+```
+
+### 动态库
+
+或者，如果你想利用此项目进行二次开发，例如在你的 C#、Python、Java 等项目中调用，你可以使用 `libncmdump` 动态库，具体使用方法见仓库的 `example` 文件夹
+
+请注意！如果你在 Windows 下开发，传递到库构造函数的文件名编码**必须为 UTF-8 编码**，否则会抛出运行时错误。
+
+## 编译项目
+
+克隆本仓库
+
+```shell
+git clone https://github.com/taurusxin/ncmdump.git
+```
+
+### Windows
+
+安装 Visual Studio 2022 和 cmake，并安装 C++ 桌面开发环境，然后安装 [vcpkg](https://github.com/microsoft/vcpkg)
+
+```shell
+# 安装 vcpkg 并安装 taglib 的静态库
+git clone https://github.com/microsoft/vcpkg.git
+cd vcpkg
+./bootstrap-vcpkg.bat
+```
+
+配置项目
+
+```shell
+# 使用 cmake 配置项目，替换 %VCPKG_ROOT% 为你的 vcpkg 安装路径
+cmake -G "Visual Studio 17 2022" -DCMAKE_TOOLCHAIN_FILE=%VCPKG_ROOT%/scripts/buildsystems/vcpkg.cmake -DVCPKG_TARGET_TRIPLET=x64-windows-static -B build
+
+# 编译项目
+cmake --build build -j 8 --config Release
+```
+
+### macOS
+
+macOS 下，你可以方便地使用 Homebrew 来安装 taglib 库
+
+```shell
+# 安装 taglib 库
+brew install taglib
+
+# 配置项目
+cmake -DCMAKE_BUILD_TYPE=Release -B build
+
+# 编译项目
+cmake --build build -j$(nproc)
+```
+
+### Linux
+
+Linux 下，由于 Ubuntu 24.04 的 taglib 仍然为 1.x 版本，不支持 CMake，所以需要手动编译安装 2.x 版本，目前 GitHub Actions 的 Linux 构建流程也是手动编译。
+
+```shell
+# 拉取源码
+wget https://github.com/taglib/taglib/releases/download/v2.1.1/taglib-2.1.1.tar.gz
+
+# 解压并进入
+tar -xzf taglib-2.1.1.tar.gz && cd taglib-2.1.1
+
+# 配置、编译和安装
+cmake -DCMAKE_INSTALL_PREFIX=/usr/local -DCMAKE_BUILD_TYPE=Release .
+make -j$(nproc)
+sudo make install
+```
+
+然后和 macOS 上一样，使用 CMake 配置项目并编译项目
+
+```shell
+# 配置项目
+cmake -DCMAKE_BUILD_TYPE=Release -B build
+
+# 编译项目
+cmake --build build -j$(nproc)
+```
+
+---
+
+你可以在 `build` 文件夹下找到编译好的二进制文件，以及一个可供其它项目使用的动态库(Windows Only)，使用方法见仓库的 `example` 文件夹
+
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=taurusxin/ncmdump&type=Date)](https://star-history.com/#taurusxin/ncmdump&Date)

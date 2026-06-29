@@ -1,0 +1,11 @@
+*.exe
+ncmdump
+
+.vscode
+.idea
+
+build
+
+cmake-build-*
+
+vcpkg_installed
