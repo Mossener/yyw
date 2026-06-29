@@ -36,6 +36,7 @@ if exist "%TCDIR%\avcodec-62.dll" (
         if exist "%%d\bin\avcodec-*.dll" (
             copy /y "%%d\bin\av*.dll" "%TCDIR%\" >nul
             copy /y "%%d\bin\sw*.dll" "%TCDIR%\" >nul 2>nul
+            copy /y "%%d\bin\*.dll" "tools\" >nul
         )
     )
     del "runtime\ffmpeg.7z"
