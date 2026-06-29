@@ -4,6 +4,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
+
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 use walkdir::WalkDir;
 
 pub const SETTINGS_FILE: &str = "stem_studio_settings.json";
@@ -555,34 +558,23 @@ pub fn find_ffmpeg() -> Option<PathBuf> {
 pub fn transfer_metadata(source_audio: &Path, stem_wav: &Path) -> Option<PathBuf> {
     let ffmpeg = find_ffmpeg()?;
     let out = stem_wav.with_extension("flac");
-    let status = Command::new(&ffmpeg)
-        .args([
-            "-y",
-            "-i",
-            &stem_wav.to_string_lossy(),
-            "-i",
-            &source_audio.to_string_lossy(),
-            "-map",
-            "0:a",
-            "-map_metadata",
-            "1",
-            "-map",
-            "1:v?",
-            "-c:a",
-            "flac",
-            "-disposition:v",
-            "attached_pic",
-            &out.to_string_lossy(),
-        ])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .ok()?;
-    if status.success() {
-        Some(out)
-    } else {
-        None
-    }
+    let mut cmd = Command::new(&ffmpeg);
+    cmd.args([
+        "-y", "-i", &stem_wav.to_string_lossy(),
+        "-i", &source_audio.to_string_lossy(),
+        "-map", "0:a",
+        "-map_metadata", "1",
+        "-map", "1:v?",
+        "-c:a", "flac",
+        "-disposition:v", "attached_pic",
+        &out.to_string_lossy(),
+    ])
+    .stdout(Stdio::null())
+    .stderr(Stdio::null());
+    #[cfg(windows)]
+    { cmd.creation_flags(0x08000000); }
+    let status = cmd.status().ok()?;
+    if status.success() { Some(out) } else { None }
 }
 
 pub fn stamp_metadata_for_source(source_audio: &Path, output_dir: &Path) -> u32 {

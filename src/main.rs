@@ -1576,13 +1576,14 @@ impl StemStudio {
             *self.task_running.lock().unwrap() = false;
             self.task_receiver = None;
 
-            // stamp metadata from source to stems
+            // run metadata stamping in background (non-blocking)
             let output = PathBuf::from(&self.output_dir);
-            for item in &self.items {
-                if let Some(ref src) = item.process_path {
+            let items: Vec<_> = self.items.iter().filter_map(|it| it.process_path.clone()).collect();
+            std::thread::spawn(move || {
+                for src in &items {
                     let _ = yyw::stamp_metadata_for_source(src, &output);
                 }
-            }
+            });
             self.scan_stems();
         }
     }
