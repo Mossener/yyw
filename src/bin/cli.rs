@@ -63,7 +63,6 @@ fn main() {
     let mut items: Vec<AudioItem> = Vec::new();
     if input_path.is_dir() {
         // treat as source directory
-        let settings = Settings::load();
         let src = input_path.to_string_lossy().to_string();
         scan_inputs(&src, &mut items);
         eprintln!("  Scanned {} files from {}", items.len(), src);

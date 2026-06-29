@@ -1575,6 +1575,14 @@ impl StemStudio {
         if done {
             *self.task_running.lock().unwrap() = false;
             self.task_receiver = None;
+
+            // stamp metadata from source to stems
+            let output = PathBuf::from(&self.output_dir);
+            for item in &self.items {
+                if let Some(ref src) = item.process_path {
+                    let _ = yyw::stamp_metadata_for_source(src, &output);
+                }
+            }
             self.scan_stems();
         }
     }
