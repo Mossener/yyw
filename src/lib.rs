@@ -579,7 +579,6 @@ pub fn transfer_metadata(source_audio: &Path, stem_wav: &Path) -> Option<PathBuf
         .status()
         .ok()?;
     if status.success() {
-        let _ = std::fs::remove_file(stem_wav);
         Some(out)
     } else {
         None
