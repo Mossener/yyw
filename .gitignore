@@ -24,3 +24,6 @@ __pycache__
 # OS
 .DS_Store
 Thumbs.db
+
+# ncmdump source (only tools/ncmdump.exe is kept)
+/ncmdump
